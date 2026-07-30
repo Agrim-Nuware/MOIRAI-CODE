@@ -110,9 +110,19 @@ def run_backtest(forecast_model: MoiraiMoEForecast):
     return forecasts, labels
 
 
+import gc
+
 print("\n--- Zero-shot (pretrained) ---")
 zs_module = MoiraiMoEModule.from_pretrained("Salesforce/moirai-moe-1.0-R-base")
 zs_forecasts, labels = run_backtest(build_forecast_model(zs_module))
+
+# Release the zero-shot model's GPU memory before loading the second
+# ~935M-param model -- otherwise both sit in VRAM simultaneously and a
+# free-tier GPU runs out of memory during the fine-tuned model's inference.
+del zs_module
+gc.collect()
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
 
 print("\n--- Fine-tuned ---")
 ft_module = MoiraiMoEModule.from_pretrained("Salesforce/moirai-moe-1.0-R-base")
