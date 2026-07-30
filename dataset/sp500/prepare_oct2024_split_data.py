@@ -9,8 +9,8 @@ Lightning-validation tail (used only for monitoring / checkpoint selection,
 never for gradient updates, and never overlapping the final test region).
 
 Engineered columns (on top of raw Open/High/Low/Close/Volume):
-  - Day            : day of week, 0=Mon .. 4=Fri (weekday seasonality)
-  - Month          : calendar month, 1-12 (month-of-year seasonality)
+  - Day            : weekday name, e.g. "Monday" .. "Friday" (weekday seasonality)
+  - Month          : calendar month name, e.g. "January" .. "December" (month-of-year seasonality)
   - Momentum       : Close - Close.shift(MOMENTUM_WINDOW)   (10-day price momentum)
   - MovingAverage  : Close.rolling(MA_WINDOW).mean()         (20-day SMA)
   - Return         : Close.pct_change()                      (simple daily return)
@@ -62,8 +62,8 @@ df = df[["Open", "High", "Low", "Close", "Volume"]]
 df = df.asfreq("B")
 df = df.ffill()
 
-df["Day"] = df.index.dayofweek.astype("float32")
-df["Month"] = df.index.month.astype("float32")
+df["Day"] = df.index.day_name()
+df["Month"] = df.index.month_name()
 df["Momentum"] = df["Close"] - df["Close"].shift(MOMENTUM_WINDOW)
 df["MovingAverage"] = df["Close"].rolling(MA_WINDOW).mean()
 df["Return"] = df["Close"].pct_change()
