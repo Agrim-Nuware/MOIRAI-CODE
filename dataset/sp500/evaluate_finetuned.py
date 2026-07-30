@@ -116,7 +116,7 @@ zs_forecasts, labels = run_backtest(build_forecast_model(zs_module))
 
 print("\n--- Fine-tuned ---")
 ft_module = MoiraiMoEModule.from_pretrained("Salesforce/moirai-moe-1.0-R-base")
-state_dict = torch.load(ckpt_path, map_location="cpu")["state_dict"]
+state_dict = torch.load(ckpt_path, map_location="cpu", weights_only=False)["state_dict"]
 module_state = {
     k[len("module.") :]: v for k, v in state_dict.items() if k.startswith("module.")
 }
