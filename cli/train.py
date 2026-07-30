@@ -121,6 +121,12 @@ class DataModule(L.LightningDataModule):
 
 @hydra.main(version_base="1.3", config_name="default.yaml")
 def main(cfg: DictConfig):
+    if cfg.trainer.get("accelerator") == "cpu":
+        # Moirai-MoE's CPU MoE-routing kernels segfault under multi-threaded
+        # intra-op parallelism (observed with torch 2.4 on Windows); training
+        # on GPU is unaffected, this only guards CPU runs.
+        torch.set_num_threads(1)
+
     if cfg.tf32:
         assert cfg.trainer.precision == 32
         torch.backends.cuda.matmul.allow_tf32 = True

@@ -13,10 +13,12 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+from .finetune import MoiraiMoEFinetune
 from .forecast import MoiraiMoEForecast
 from .module import MoiraiMoEModule
 
 __all__ = [
+    "MoiraiMoEFinetune",
     "MoiraiMoEForecast",
     "MoiraiMoEModule",
 ]

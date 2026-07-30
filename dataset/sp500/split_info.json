@@ -1,0 +1,16 @@
+{
+  "total_len": 5217,
+  "final_test_start": 4965,
+  "trainval_len": 4965,
+  "train_length": 4713,
+  "lightning_val_offset": 4713,
+  "lightning_val_length": 252,
+  "final_test_days": 252,
+  "variates": [
+    "Open",
+    "High",
+    "Low",
+    "Close",
+    "Volume"
+  ]
+}
