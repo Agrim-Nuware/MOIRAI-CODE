@@ -182,6 +182,65 @@ def _from_wide_dataframe_multivariate(
     return example_gen_func, features
 
 
+def _from_wide_dataframe_multivariate_covariates(
+    df: pd.DataFrame,
+    target_columns: list[str],
+    covariate_columns: list[str],
+    offset: Optional[int] = None,
+    date_offset: Optional[pd.Timestamp] = None,
+    freq: str = "H",
+) -> tuple[GenFunc, Features]:
+    """
+    Like _from_wide_dataframe_multivariate, but splits the dataframe's columns
+    into a multivariate `target` (forecasted) and a `past_feat_dynamic_real`
+    covariate block (fed to the model as context only, never forecasted --
+    uni2ts/MoiraiFinetune's transform pipeline and MoiraiMoEForecast already
+    support this field natively).
+    """
+    if offset is not None:
+        df = df.iloc[:offset]
+    elif date_offset is not None:
+        df = df[df.index <= date_offset]
+
+    inferred_freq = pd.infer_freq(df.index)
+    if inferred_freq is not None:
+        print(
+            f"Inferred frequency: {inferred_freq}. Using this value for the 'freq' parameter."
+        )
+    else:
+        print(
+            f"Inferred frequency is None. Using predefined {freq} for the 'freq' parameter."
+        )
+
+    target_df = df[target_columns]
+    covariate_df = df[covariate_columns]
+
+    def example_gen_func() -> Generator[dict[str, Any], None, None]:
+        yield {
+            "target": target_df.to_numpy().T,
+            "past_feat_dynamic_real": covariate_df.to_numpy().T,
+            "start": df.index[0],
+            "freq": (
+                pd.infer_freq(df.index) if pd.infer_freq(df.index) is not None else freq
+            ),
+            "item_id": "item_0",
+        }
+
+    features = Features(
+        dict(
+            item_id=Value("string"),
+            start=Value("timestamp[s]"),
+            freq=Value("string"),
+            target=Sequence(Sequence(Value("float32")), length=len(target_columns)),
+            past_feat_dynamic_real=Sequence(
+                Sequence(Value("float32")), length=len(covariate_columns)
+            ),
+        )
+    )
+
+    return example_gen_func, features
+
+
 @dataclass
 class SimpleDatasetBuilder(DatasetBuilder):
     dataset: str
@@ -272,6 +331,8 @@ class SimpleFinetuneDatasetBuilder(DatasetBuilder):
         date_offset: Optional[pd.Timestamp] = None,
         freq: str = "H",
         normalize: Optional[bool] = False,
+        target_columns: Optional[list[str]] = None,
+        covariate_columns: Optional[list[str]] = None,
     ):
 
         assert offset is None or date_offset is None, (
@@ -293,21 +354,36 @@ class SimpleFinetuneDatasetBuilder(DatasetBuilder):
             )
             df = self.scale(df, 0, end)
 
-        if dataset_type == "long":
-            _from_dataframe = _from_long_dataframe
-        elif dataset_type == "wide":
-            _from_dataframe = _from_wide_dataframe
-        elif dataset_type == "wide_multivariate":
-            _from_dataframe = _from_wide_dataframe_multivariate
+        if dataset_type == "wide_multivariate_covariates":
+            assert target_columns is not None and covariate_columns is not None, (
+                "target_columns and covariate_columns are required for "
+                "dataset_type='wide_multivariate_covariates'"
+            )
+            example_gen_func, features = _from_wide_dataframe_multivariate_covariates(
+                df,
+                target_columns,
+                covariate_columns,
+                freq=freq,
+                offset=offset,
+                date_offset=date_offset,
+            )
         else:
-            raise ValueError(
-                f"Unrecognized dataset_type, {dataset_type}."
-                " Valid options are 'long', 'wide', and 'wide_multivariate'."
+            if dataset_type == "long":
+                _from_dataframe = _from_long_dataframe
+            elif dataset_type == "wide":
+                _from_dataframe = _from_wide_dataframe
+            elif dataset_type == "wide_multivariate":
+                _from_dataframe = _from_wide_dataframe_multivariate
+            else:
+                raise ValueError(
+                    f"Unrecognized dataset_type, {dataset_type}."
+                    " Valid options are 'long', 'wide', 'wide_multivariate', and"
+                    " 'wide_multivariate_covariates'."
+                )
+            example_gen_func, features = _from_dataframe(
+                df, freq=freq, offset=offset, date_offset=date_offset
             )
 
-        example_gen_func, features = _from_dataframe(
-            df, freq=freq, offset=offset, date_offset=date_offset
-        )
         hf_dataset = datasets.Dataset.from_generator(
             example_gen_func, features=features
         )
@@ -324,6 +400,8 @@ class SimpleFinetuneDatasetBuilder(DatasetBuilder):
             dataset_type = "wide"
         elif self.mode == "M":
             dataset_type = "wide_multivariate"
+        elif self.mode == "MC":
+            dataset_type = "wide_multivariate_covariates"
 
         return FinetuneDataset(
             self.windows,
@@ -369,25 +447,37 @@ class SimpleEvalDatasetBuilder(DatasetBuilder):
         freq: str = "H",
         mean: pd.Series = None,
         std: pd.Series = None,
+        target_columns: Optional[list[str]] = None,
+        covariate_columns: Optional[list[str]] = None,
     ):
         df = pd.read_csv(file, index_col=0, parse_dates=True)
 
         if mean is not None and std is not None:  # Normalize data in LSF setup
             df = (df - mean) / (std + 1e-10)
 
-        if dataset_type == "long":
-            _from_dataframe = _from_long_dataframe
-        elif dataset_type == "wide":
-            _from_dataframe = _from_wide_dataframe
-        elif dataset_type == "wide_multivariate":
-            _from_dataframe = _from_wide_dataframe_multivariate
-        else:
-            raise ValueError(
-                f"Unrecognized dataset_type, {dataset_type}."
-                " Valid options are 'long', 'wide', and 'wide_multivariate'."
+        if dataset_type == "wide_multivariate_covariates":
+            assert target_columns is not None and covariate_columns is not None, (
+                "target_columns and covariate_columns are required for "
+                "dataset_type='wide_multivariate_covariates'"
             )
+            example_gen_func, features = _from_wide_dataframe_multivariate_covariates(
+                df, target_columns, covariate_columns, freq=freq
+            )
+        else:
+            if dataset_type == "long":
+                _from_dataframe = _from_long_dataframe
+            elif dataset_type == "wide":
+                _from_dataframe = _from_wide_dataframe
+            elif dataset_type == "wide_multivariate":
+                _from_dataframe = _from_wide_dataframe_multivariate
+            else:
+                raise ValueError(
+                    f"Unrecognized dataset_type, {dataset_type}."
+                    " Valid options are 'long', 'wide', 'wide_multivariate', and"
+                    " 'wide_multivariate_covariates'."
+                )
+            example_gen_func, features = _from_dataframe(df, freq=freq)
 
-        example_gen_func, features = _from_dataframe(df, freq=freq)
         hf_dataset = datasets.Dataset.from_generator(
             example_gen_func, features=features
         )
@@ -403,6 +493,8 @@ class SimpleEvalDatasetBuilder(DatasetBuilder):
             dataset_type = "wide"
         elif self.mode == "M":
             dataset_type = "wide_multivariate"
+        elif self.mode == "MC":
+            dataset_type = "wide_multivariate_covariates"
 
         return EvalDataset(
             self.windows,
@@ -514,8 +606,23 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset_type",
         type=str,
-        choices=["wide", "long", "wide_multivariate"],
+        choices=["wide", "long", "wide_multivariate", "wide_multivariate_covariates"],
         default="wide",
+    )
+    parser.add_argument(
+        "--target_columns",
+        type=str,
+        default=None,
+        help="Comma-separated column names to forecast. Required when "
+        "--dataset_type=wide_multivariate_covariates.",
+    )
+    parser.add_argument(
+        "--covariate_columns",
+        type=str,
+        default=None,
+        help="Comma-separated column names fed to the model as context-only "
+        "covariates (past_feat_dynamic_real), never forecasted. Required when "
+        "--dataset_type=wide_multivariate_covariates.",
     )
     parser.add_argument(
         "--offset",
@@ -541,6 +648,13 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    target_columns = (
+        args.target_columns.split(",") if args.target_columns is not None else None
+    )
+    covariate_columns = (
+        args.covariate_columns.split(",") if args.covariate_columns is not None else None
+    )
+
     # Create training dataset
     # If offset/date_offset is not provided, the whole data will be used for training.
     # Otherwise, only the part before offset is used for training.
@@ -559,6 +673,8 @@ if __name__ == "__main__":
         date_offset=pd.Timestamp(args.date_offset) if args.date_offset else None,
         freq=args.freq,
         normalize=args.normalize,
+        target_columns=target_columns,
+        covariate_columns=covariate_columns,
     )
 
     # Create a validation dataset if offset/date_offset is provided.
@@ -578,4 +694,6 @@ if __name__ == "__main__":
             freq=args.freq,
             mean=train_dataset_builder.mean,
             std=train_dataset_builder.std,
+            target_columns=target_columns,
+            covariate_columns=covariate_columns,
         )

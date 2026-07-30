@@ -1,0 +1,41 @@
+{
+  "total_len": 5199,
+  "cutoff_date": "2024-10-01",
+  "pool_len": 4722,
+  "train_length": 4470,
+  "lightning_val_offset": 4470,
+  "lightning_val_length": 252,
+  "final_test_len": 477,
+  "target_columns": [
+    "Close",
+    "Return",
+    "LogReturn"
+  ],
+  "covariate_columns": [
+    "Open",
+    "High",
+    "Low",
+    "Volume",
+    "Momentum",
+    "MovingAverage",
+    "DaySin",
+    "DayCos",
+    "MonthSin",
+    "MonthCos"
+  ],
+  "full_variates": [
+    "Open",
+    "High",
+    "Low",
+    "Close",
+    "Volume",
+    "Day",
+    "Month",
+    "Momentum",
+    "MovingAverage",
+    "Return",
+    "LogReturn"
+  ],
+  "momentum_window": 10,
+  "ma_window": 20
+}
