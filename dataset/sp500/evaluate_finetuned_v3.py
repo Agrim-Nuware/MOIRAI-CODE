@@ -61,6 +61,15 @@ parser.add_argument(
     default=None,
     help="Stride between windows (defaults to prediction_length, i.e. non-overlapping).",
 )
+parser.add_argument(
+    "--eval_batch_size",
+    type=int,
+    default=2,
+    help="Inference batch size. With 10 covariates added, each packed sequence "
+    "is ~4x longer than v2's target-only sequences, and attention memory "
+    "scales roughly with sequence length squared -- kept low by default to "
+    "avoid CUDA OOM on a free-tier GPU. Raise if you have headroom to spare.",
+)
 args = parser.parse_args()
 
 CONTEXT_LENGTH = args.context_length
@@ -122,7 +131,7 @@ def build_forecast_model(module: MoiraiMoEModule) -> MoiraiMoEForecast:
 
 
 def run_backtest(forecast_model: MoiraiMoEForecast):
-    predictor = forecast_model.create_predictor(batch_size=8)
+    predictor = forecast_model.create_predictor(batch_size=args.eval_batch_size)
     forecasts = list(predictor.predict(test_data.input))
     labels = list(test_data.label)
     return forecasts, labels
