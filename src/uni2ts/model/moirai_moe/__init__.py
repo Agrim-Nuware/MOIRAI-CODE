@@ -13,12 +13,14 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-from .finetune import MoiraiMoEFinetune
+from .finetune import LoRALinear, MoiraiMoEFinetune, inject_lora_attention
 from .forecast import MoiraiMoEForecast
 from .module import MoiraiMoEModule
 
 __all__ = [
+    "LoRALinear",
     "MoiraiMoEFinetune",
     "MoiraiMoEForecast",
     "MoiraiMoEModule",
+    "inject_lora_attention",
 ]

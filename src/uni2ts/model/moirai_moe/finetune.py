@@ -24,6 +24,7 @@ validation_step, configure_optimizers, and transform_map logic all apply
 unchanged -- this class only swaps in MoiraiMoEModule for construction.
 """
 
+import math
 from typing import Any, Optional
 
 import torch
@@ -37,6 +38,55 @@ from uni2ts.module.ts_embed import FeatLinear, MultiInSizeLinear, MultiOutSizeLi
 from uni2ts.optim import SchedulerType, get_scheduler
 
 from .module import MoiraiMoEModule
+
+
+class LoRALinear(nn.Module):
+    """
+    Wraps a frozen nn.Linear with a trainable low-rank delta:
+        y = base(x) + scaling * (x @ lora_A^T @ lora_B^T)
+
+    lora_B is zero-initialized, so the wrapped layer is an exact no-op at
+    step 0 -- training starts *at* the zero-shot solution and can only move
+    away from it by a small, rank-constrained amount, unlike full/freeze_ffn
+    fine-tuning which leave whichever parameters are trainable completely
+    unconstrained (full-rank). This directly targets the overfitting pattern
+    seen with those patterns (validation loss degrading while training loss
+    keeps improving), without touching the base pretrained weights at all.
+    """
+
+    def __init__(self, base: nn.Linear, rank: int = 8, alpha: float = 16.0):
+        super().__init__()
+        self.base = base
+        for p in self.base.parameters():
+            p.requires_grad = False
+        self.rank = rank
+        self.scaling = alpha / rank
+        self.lora_A = nn.Parameter(torch.zeros(rank, base.in_features))
+        self.lora_B = nn.Parameter(torch.zeros(base.out_features, rank))
+        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.base(x) + self.scaling * (x @ self.lora_A.T @ self.lora_B.T)
+
+
+def inject_lora_attention(module: nn.Module, rank: int = 8, alpha: float = 16.0) -> int:
+    """
+    Recursively replace attention projection layers (q_proj/k_proj/v_proj/
+    out_proj -- the standard nn.Linear layers in GroupedQueryAttention and its
+    subclasses) with LoRALinear wrappers, in place. Returns the number of
+    layers wrapped. FFN/MoE-expert layers, embeddings, and the output head
+    are untouched (left however finetune_pattern="lora"'s caller configured
+    them -- see MoiraiMoEFinetune.configure_optimizers).
+    """
+    target_names = ("q_proj", "k_proj", "v_proj", "out_proj")
+    count = 0
+    for name, child in list(module.named_children()):
+        if name in target_names and isinstance(child, nn.Linear):
+            setattr(module, name, LoRALinear(child, rank=rank, alpha=alpha))
+            count += 1
+        else:
+            count += inject_lora_attention(child, rank=rank, alpha=alpha)
+    return count
 
 
 class MoiraiMoEFinetune(MoiraiFinetune):
@@ -63,6 +113,8 @@ class MoiraiMoEFinetune(MoiraiFinetune):
         patch_size: Optional[int] = None,
         finetune_pattern: str | list[str] = "full",
         use_8bit_adam: bool = False,
+        lora_rank: int = 8,
+        lora_alpha: float = 16.0,
     ):
         assert (module is not None) or (
             module_kwargs is not None
@@ -86,6 +138,7 @@ class MoiraiMoEFinetune(MoiraiFinetune):
         self.patch_size = patch_size
         self.finetune_pattern = finetune_pattern
         self.use_8bit_adam = use_8bit_adam
+        self._lora_injected = False
 
     def configure_optimizers(self) -> dict:
         # Full copy of MoiraiFinetune.configure_optimizers with FeatLinear
@@ -104,6 +157,21 @@ class MoiraiMoEFinetune(MoiraiFinetune):
             for pn, p in self.named_parameters():
                 if "param_proj" not in pn:
                     p.requires_grad = False
+        elif self.finetune_pattern == "lora":
+            if not self._lora_injected:
+                for p in self.parameters():
+                    p.requires_grad = False
+                n_wrapped = inject_lora_attention(
+                    self.module,
+                    rank=self.hparams.lora_rank,
+                    alpha=self.hparams.lora_alpha,
+                )
+                self._lora_injected = True
+                print(
+                    f"LoRA: wrapped {n_wrapped} attention projection layers "
+                    f"(rank={self.hparams.lora_rank}, alpha={self.hparams.lora_alpha}); "
+                    "everything else (FFN/MoE experts, embeddings, output head) stays frozen."
+                )
         else:
             raise ValueError(
                 "Unsupported finetune pattern {}".format(self.finetune_pattern)
@@ -130,7 +198,13 @@ class MoiraiMoEFinetune(MoiraiFinetune):
                     continue
 
                 fpn = f"{mn}.{pn}" if mn else pn
-                if pn.endswith("bias"):
+                if isinstance(m, LoRALinear) and pn in ("lora_A", "lora_B"):
+                    # LoRA's own low-rank matrices -- not caught by the
+                    # weight/bias suffix rules below since they aren't named
+                    # "weight"/"bias" (m.base, the frozen wrapped Linear, is
+                    # skipped above since its params have requires_grad=False).
+                    decay.add(fpn)
+                elif pn.endswith("bias"):
                     no_decay.add(fpn)
                 elif pn.endswith("weight") and isinstance(m, whitelist_params):
                     decay.add(fpn)
