@@ -1,0 +1,58 @@
+{
+  "total_len": 5200,
+  "cutoff_date": "2024-10-01",
+  "pool_len": 4721,
+  "train_length": 4469,
+  "lightning_val_offset": 4469,
+  "lightning_val_length": 252,
+  "final_test_len": 479,
+  "tickers": [
+    "GSPC",
+    "IXIC",
+    "DJI",
+    "RUT"
+  ],
+  "eval_ticker": "GSPC",
+  "target_suffixes": [
+    "Close",
+    "Return",
+    "LogReturn"
+  ],
+  "covariate_suffixes": [
+    "Open",
+    "High",
+    "Low",
+    "Volume",
+    "Momentum",
+    "MovingAverage",
+    "DaySin",
+    "DayCos",
+    "MonthSin",
+    "MonthCos"
+  ],
+  "shared_covariate_columns": [
+    "VIX_Close",
+    "TNX_Close"
+  ],
+  "eval_target_columns": [
+    "GSPC_Close",
+    "GSPC_Return",
+    "GSPC_LogReturn"
+  ],
+  "eval_covariate_columns": [
+    "GSPC_Open",
+    "GSPC_High",
+    "GSPC_Low",
+    "GSPC_Volume",
+    "GSPC_Momentum",
+    "GSPC_MovingAverage",
+    "GSPC_DaySin",
+    "GSPC_DayCos",
+    "GSPC_MonthSin",
+    "GSPC_MonthCos",
+    "VIX_Close",
+    "TNX_Close"
+  ],
+  "momentum_window": 10,
+  "ma_window": 20
+}

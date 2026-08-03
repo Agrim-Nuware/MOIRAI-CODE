@@ -241,6 +241,76 @@ def _from_wide_dataframe_multivariate_covariates(
     return example_gen_func, features
 
 
+def _from_wide_dataframe_multivariate_covariates_multi_item(
+    df: pd.DataFrame,
+    tickers: list[str],
+    target_suffixes: list[str],
+    covariate_suffixes: list[str],
+    shared_covariate_columns: list[str],
+    offset: Optional[int] = None,
+    date_offset: Optional[pd.Timestamp] = None,
+    freq: str = "H",
+) -> tuple[GenFunc, Features]:
+    """
+    Like _from_wide_dataframe_multivariate_covariates, but yields one item per
+    ticker instead of a single item -- e.g. fine-tuning on several equity
+    indices at once instead of one narrow series. Columns are expected to be
+    named "{ticker}_{suffix}" for each ticker's own target/covariate columns
+    (e.g. "GSPC_Close", "IXIC_Volume"); shared_covariate_columns are literal
+    column names (e.g. macro series like VIX/TNX) reused unchanged for every
+    item.
+    """
+    if offset is not None:
+        df = df.iloc[:offset]
+    elif date_offset is not None:
+        df = df[df.index <= date_offset]
+
+    inferred_freq = pd.infer_freq(df.index)
+    if inferred_freq is not None:
+        print(
+            f"Inferred frequency: {inferred_freq}. Using this value for the 'freq' parameter."
+        )
+    else:
+        print(
+            f"Inferred frequency is None. Using predefined {freq} for the 'freq' parameter."
+        )
+
+    n_target = len(target_suffixes)
+    n_covariate = len(covariate_suffixes) + len(shared_covariate_columns)
+
+    def example_gen_func() -> Generator[dict[str, Any], None, None]:
+        for ticker in tickers:
+            target_cols = [f"{ticker}_{s}" for s in target_suffixes]
+            covariate_cols = [
+                f"{ticker}_{s}" for s in covariate_suffixes
+            ] + shared_covariate_columns
+            yield {
+                "target": df[target_cols].to_numpy().T,
+                "past_feat_dynamic_real": df[covariate_cols].to_numpy().T,
+                "start": df.index[0],
+                "freq": (
+                    pd.infer_freq(df.index)
+                    if pd.infer_freq(df.index) is not None
+                    else freq
+                ),
+                "item_id": ticker,
+            }
+
+    features = Features(
+        dict(
+            item_id=Value("string"),
+            start=Value("timestamp[s]"),
+            freq=Value("string"),
+            target=Sequence(Sequence(Value("float32")), length=n_target),
+            past_feat_dynamic_real=Sequence(
+                Sequence(Value("float32")), length=n_covariate
+            ),
+        )
+    )
+
+    return example_gen_func, features
+
+
 @dataclass
 class SimpleDatasetBuilder(DatasetBuilder):
     dataset: str
@@ -333,6 +403,8 @@ class SimpleFinetuneDatasetBuilder(DatasetBuilder):
         normalize: Optional[bool] = False,
         target_columns: Optional[list[str]] = None,
         covariate_columns: Optional[list[str]] = None,
+        tickers: Optional[list[str]] = None,
+        shared_covariate_columns: Optional[list[str]] = None,
     ):
 
         assert offset is None or date_offset is None, (
@@ -354,7 +426,24 @@ class SimpleFinetuneDatasetBuilder(DatasetBuilder):
             )
             df = self.scale(df, 0, end)
 
-        if dataset_type == "wide_multivariate_covariates":
+        if dataset_type == "wide_multivariate_covariates" and tickers is not None:
+            assert target_columns is not None and covariate_columns is not None, (
+                "target_columns and covariate_columns are required for "
+                "dataset_type='wide_multivariate_covariates'"
+            )
+            example_gen_func, features = (
+                _from_wide_dataframe_multivariate_covariates_multi_item(
+                    df,
+                    tickers,
+                    target_columns,
+                    covariate_columns,
+                    shared_covariate_columns or [],
+                    freq=freq,
+                    offset=offset,
+                    date_offset=date_offset,
+                )
+            )
+        elif dataset_type == "wide_multivariate_covariates":
             assert target_columns is not None and covariate_columns is not None, (
                 "target_columns and covariate_columns are required for "
                 "dataset_type='wide_multivariate_covariates'"
@@ -449,13 +538,30 @@ class SimpleEvalDatasetBuilder(DatasetBuilder):
         std: pd.Series = None,
         target_columns: Optional[list[str]] = None,
         covariate_columns: Optional[list[str]] = None,
+        tickers: Optional[list[str]] = None,
+        shared_covariate_columns: Optional[list[str]] = None,
     ):
         df = pd.read_csv(file, index_col=0, parse_dates=True)
 
         if mean is not None and std is not None:  # Normalize data in LSF setup
             df = (df - mean) / (std + 1e-10)
 
-        if dataset_type == "wide_multivariate_covariates":
+        if dataset_type == "wide_multivariate_covariates" and tickers is not None:
+            assert target_columns is not None and covariate_columns is not None, (
+                "target_columns and covariate_columns are required for "
+                "dataset_type='wide_multivariate_covariates'"
+            )
+            example_gen_func, features = (
+                _from_wide_dataframe_multivariate_covariates_multi_item(
+                    df,
+                    tickers,
+                    target_columns,
+                    covariate_columns,
+                    shared_covariate_columns or [],
+                    freq=freq,
+                )
+            )
+        elif dataset_type == "wide_multivariate_covariates":
             assert target_columns is not None and covariate_columns is not None, (
                 "target_columns and covariate_columns are required for "
                 "dataset_type='wide_multivariate_covariates'"
@@ -625,6 +731,24 @@ if __name__ == "__main__":
         "--dataset_type=wide_multivariate_covariates.",
     )
     parser.add_argument(
+        "--tickers",
+        type=str,
+        default=None,
+        help="Comma-separated ticker prefixes for multi-item datasets (e.g. "
+        "'GSPC,IXIC,DJI,RUT') -- one item per ticker. --target_columns and "
+        "--covariate_columns are then treated as per-ticker column suffixes "
+        "(columns must be named '{ticker}_{suffix}'). Omit for a single-item "
+        "dataset (columns used as-is).",
+    )
+    parser.add_argument(
+        "--shared_covariate_columns",
+        type=str,
+        default=None,
+        help="Comma-separated literal column names (e.g. macro series like "
+        "VIX/TNX) reused unchanged as covariates for every ticker item. Only "
+        "used together with --tickers.",
+    )
+    parser.add_argument(
         "--offset",
         type=int,
         default=None,
@@ -654,6 +778,12 @@ if __name__ == "__main__":
     covariate_columns = (
         args.covariate_columns.split(",") if args.covariate_columns is not None else None
     )
+    tickers = args.tickers.split(",") if args.tickers is not None else None
+    shared_covariate_columns = (
+        args.shared_covariate_columns.split(",")
+        if args.shared_covariate_columns is not None
+        else None
+    )
 
     # Create training dataset
     # If offset/date_offset is not provided, the whole data will be used for training.
@@ -675,6 +805,8 @@ if __name__ == "__main__":
         normalize=args.normalize,
         target_columns=target_columns,
         covariate_columns=covariate_columns,
+        tickers=tickers,
+        shared_covariate_columns=shared_covariate_columns,
     )
 
     # Create a validation dataset if offset/date_offset is provided.
@@ -696,4 +828,6 @@ if __name__ == "__main__":
             std=train_dataset_builder.std,
             target_columns=target_columns,
             covariate_columns=covariate_columns,
+            tickers=tickers,
+            shared_covariate_columns=shared_covariate_columns,
         )
