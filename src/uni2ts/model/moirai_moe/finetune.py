@@ -61,8 +61,15 @@ class LoRALinear(nn.Module):
             p.requires_grad = False
         self.rank = rank
         self.scaling = alpha / rank
-        self.lora_A = nn.Parameter(torch.zeros(rank, base.in_features))
-        self.lora_B = nn.Parameter(torch.zeros(base.out_features, rank))
+        # Match the device/dtype of the layer being wrapped -- injection
+        # happens inside configure_optimizers, which Lightning calls *after*
+        # moving the model to its target device, so freshly-created
+        # parameters here would otherwise default to CPU/fp32 and never get
+        # swept up in a later .to(device) call.
+        device = base.weight.device
+        dtype = base.weight.dtype
+        self.lora_A = nn.Parameter(torch.zeros(rank, base.in_features, device=device, dtype=dtype))
+        self.lora_B = nn.Parameter(torch.zeros(base.out_features, rank, device=device, dtype=dtype))
         nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
